@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# WorkBuddy 每日积分签到（通用版，可分发）  v1.1.0
+# WorkBuddy 每日积分签到（通用版，可分发）  v1.1.1
 #
 # 流程（两条路径，A 优先、B 兜底）：
 #   路径 A（首选，零凭据）：调用桌面端注入的本地服务代理
@@ -225,8 +225,10 @@ discover_proxy_bases_raw() {
       2>/dev/null | tr -d '\r' | tr -d ' ')
   fi
   if [ -z "$ports" ] && command -v lsof >/dev/null 2>&1; then
+    # macOS / Linux 回退。进程名按大小写不敏感匹配 WorkBuddy / CodeBuddy
+    # （应用曾用名 CodeBuddy；Electron 的渲染/工具进程名会带 " Helper" 后缀，同样命中）
     ports=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null \
-      | awk '/WorkBuddy|workbuddy/ {print $9}' | sed 's/.*://' | tr -d ' ')
+      | grep -iE 'workbuddy|codebuddy' | awk '{print $9}' | sed 's/.*://' | tr -d ' ')
   fi
 
   local p
@@ -249,34 +251,45 @@ fi
 # 其次「原始 ../ + --path-as-is」作为兼容兜底。
 # ⚠️ 按形态分组（先全部 plain，再全部 as-is），而不是每个地址交替两种形态：
 #    否则前 N-1 个失败地址各会白试一次 as-is，最坏情况请求数翻倍。
+# ⚠️ 地址列表只求值一次（用 here-string，不要写两遍进程替换）：否则 full 轮会把
+#    「端口枚举」整段跑两遍，实测每次约 1s，纯属白烧。
+# $3=1 表示排除环境变量地址（它已在 fast 轮试过，full 轮不该为它再付两次请求）
 # 每行格式：<mode>|<url>
 proxy_candidates() {
-  local tgt="$1" dmode="${2:-full}" enc base
+  local tgt="$1" dmode="${2:-full}" skip_env="${3:-0}" enc bases base
   enc=$(printf '%s' "$tgt" | sed 's#/#%2F#g')
+  bases="$(discover_proxy_bases "$dmode")"
+  if [ "$skip_env" = "1" ] && [ -n "${CODEBUDDY_SERVICE_PROXY_URL:-}" ]; then
+    bases="$(printf '%s\n' "$bases" | grep -vxF "${CODEBUDDY_SERVICE_PROXY_URL%/}" || true)"
+  fi
   while IFS= read -r base; do
     [ -z "$base" ] && continue
     printf '%s\n' "plain|${base}/..%2F..%2F${enc}"
-  done < <(discover_proxy_bases "$dmode")
+  done <<< "$bases"
   while IFS= read -r base; do
     [ -z "$base" ] && continue
     printf '%s\n' "as-is|${base}/../../${tgt}"
-  done < <(discover_proxy_bases "$dmode")
+  done <<< "$bases"
 }
 
 # 在给定的一批候选地址上尝试请求；返回首个 code=0 的响应
+# ⚠️ 回环请求必须加 --noproxy '*'：企业环境常设 http_proxy/https_proxy 环境变量，
+#    不绕过就会把 127.0.0.1 的请求也丢给代理 —— 实测会导致整轮签到 42s 后直接失败。
+# ⚠️ --connect-timeout 5 兜住「端口静默丢包」的最坏情况（Windows 上连一个关闭的端口
+#    本就要约 2.2s；若被防火墙静默丢弃，没有这个上限会一路耗到 -m 20）。
 proxy_try_bases() {
-  local tgt="$1" dmode="$2" line mode u resp
+  local tgt="$1" dmode="$2" skip_env="${3:-0}" line mode u resp
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     mode="${line%%|*}"
     u="${line#*|}"
     if [ "$mode" = "as-is" ]; then
-      resp=$("$CURL_BIN" -s -m 20 --path-as-is -X POST "$u" \
+      resp=$("$CURL_BIN" -s -m 20 --connect-timeout 5 --noproxy '*' --path-as-is -X POST "$u" \
         -H "X-Service-Id: $PROXY_SVC_ID" \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json' -d '{}' 2>/dev/null)
     else
-      resp=$("$CURL_BIN" -s -m 20 -X POST "$u" \
+      resp=$("$CURL_BIN" -s -m 20 --connect-timeout 5 --noproxy '*' -X POST "$u" \
         -H "X-Service-Id: $PROXY_SVC_ID" \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json' -d '{}' 2>/dev/null)
@@ -284,19 +297,23 @@ proxy_try_bases() {
     case "$resp" in
       *'"code":0'*) printf '%s' "$resp"; return 0 ;;
     esac
-  done < <(proxy_candidates "$tgt" "$dmode")
+  done < <(proxy_candidates "$tgt" "$dmode" "$skip_env")
   return 1
 }
 
 # 调用云端接口，返回首个 code=0 的响应；全部失败返回非 0
 # 快慢两轮：先只用环境变量地址（廉价），失败才做端口枚举（昂贵）
+# 注意 fast 轮传 skip_env=0 —— fast 模式本身就只输出环境变量地址，不能再排除，否则候选为空
 proxy_call() {
   local tgt="$1"
   [ -z "$CURL_BIN" ] && return 1
   if [ -n "${CODEBUDDY_SERVICE_PROXY_URL:-}" ]; then
-    proxy_try_bases "$tgt" fast && return 0
+    proxy_try_bases "$tgt" fast 0 && return 0
+    # fast 轮失败（地址已失效 / App 重启换了端口）→ full 轮，并跳过刚试过的环境变量地址
+    proxy_try_bases "$tgt" full 1 && return 0
+    return 1
   fi
-  proxy_try_bases "$tgt" full
+  proxy_try_bases "$tgt" full 0
 }
 
 # JSON 取值：Node（jget.js）优先，python3 兜底
@@ -363,16 +380,22 @@ proxy_checkin() {
 if proxy_checkin; then
   exit 0
 fi
+# 记录首选路径失败：下面的失败提示要据此区分「桌面端没开」和「缺运行时」——
+# 登录态已信封加密，脱机时装 Node/Electron 都救不了，提示错了会让人白折腾。
+PROXY_FAILED=1
 
 # ---------- 1. 读取令牌 ----------
 TOKEN="$(read_token)"
 
-if [ -z "$TOKEN" ]; then
-  log "❌ 未找到 Node 或 Electron 运行时，或运行时未能产出令牌。请安装 Node.js，或设置 WB_CHECKIN_NODE / WB_CHECKIN_ELECTRON 指向可用运行时。"
-  exit 1
-fi
-if [[ "$TOKEN" == ERR* ]]; then
-  log "❌ 获取令牌失败（${TOKEN}）。请确认已安装并登录 WorkBuddy 桌面端。"
+if [ -z "$TOKEN" ] || [[ "$TOKEN" == ERR* ]]; then
+  if [ "$PROXY_FAILED" = "1" ]; then
+    log "❌ 两条路径都失败了。首选路径（本地服务代理）不可用，最常见的原因是 WorkBuddy 桌面端没在运行 —— 先启动桌面端再重试；当前登录态是 at-rest 信封加密（解封密钥只在 App 进程内存），脱机状态下没有任何离线办法拿到令牌，装 Node.js / Electron 都不解决问题。"
+    [ -n "$TOKEN" ] && log "   （回退路径的报错：${TOKEN}）"
+  elif [ -z "$TOKEN" ]; then
+    log "❌ 未找到 Node 或 Electron 运行时，或运行时未能产出令牌。请安装 Node.js，或设置 WB_CHECKIN_NODE / WB_CHECKIN_ELECTRON 指向可用运行时。"
+  else
+    log "❌ 获取令牌失败（${TOKEN}）。请确认已安装并登录 WorkBuddy 桌面端。"
+  fi
   exit 1
 fi
 
@@ -388,7 +411,11 @@ if [ -z "$STATUS" ]; then
   exit 1
 fi
 if echo "$STATUS" | grep -qi "401\|unauthorized"; then
-  log "❌ 令牌已过期（401），请打开 WorkBuddy 桌面端刷新登录态后重试"
+  if [ "$PROXY_FAILED" = "1" ]; then
+    log "❌ 收到 401。首选路径（本地服务代理）没生效，最常见的原因是 WorkBuddy 桌面端没在运行；这里的 401 来自回退路径读到的旧令牌。先启动桌面端再重试即可——桌面端在运行时由 App 代持令牌，根本不需要解密。"
+  else
+    log "❌ 令牌已过期（401），请打开 WorkBuddy 桌面端刷新登录态后重试"
+  fi
   exit 1
 fi
 

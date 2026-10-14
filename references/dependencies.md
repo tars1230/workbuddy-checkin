@@ -50,6 +50,9 @@
 ## 网络要求
 
 - **仅需本机回环**：路径 A 请求发往 `http://127.0.0.1:<port>`，由桌面端代为出网，脚本自身零配置。
+- **企业代理环境**：若设置了 `http_proxy` / `https_proxy` 环境变量，curl 会默认把**回环请求也交给代理**，
+  导致路径 A 失效。v1.1.1 起所有回环调用已强制 `--noproxy '*'`，无需你再做配置；
+  但回退路径发往 `copilot.tencent.com` 的请求仍会遵循系统代理（企业网络可能正需要它）。
 - 路径 B 需可访问 `https://copilot.tencent.com`；仅旧版账户首次安装 Electron 时才需 `https://registry.npmjs.org`。
 - 国内网络下载 Electron 慢时，配置镜像：
   ```bash

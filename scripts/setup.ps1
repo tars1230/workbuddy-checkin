@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# WorkBuddy 每日签到 - 环境安装脚本（Windows PowerShell 版）  v1.1.0
+# WorkBuddy 每日签到 - 环境安装脚本（Windows PowerShell 版）  v1.1.1
 #
 # 检查顺序（与 checkin.ps1 一致）：
 #   路径 A（首选）：本地服务代理可用？→ 零凭据，无需 Node / Electron，直接完成
@@ -92,6 +92,7 @@ function Get-ProxyBases {
 }
 
 # ---------- 路径 A 探测：本地服务代理是否可用（零凭据，不接触任何令牌） ----------
+# 回环请求加 --noproxy "*"：企业环境设了 http_proxy/https_proxy 时会误把 127.0.0.1 的请求丢给代理
 function Test-ProxyAvailable {
     if (-not (Get-Command curl.exe -ErrorAction SilentlyContinue)) { return $false }
     $enc = "billing/meter/checkin-activity-status" -replace '/', '%2F'
@@ -106,7 +107,7 @@ function Test-ProxyAvailable {
                 if ($pass -eq "plain") { $u = "$base/..%2F..%2F$enc" } else { $u = "$base/../../billing/meter/checkin-activity-status" }
                 $resp = ""
                 try {
-                    $resp = & curl.exe -s -m 20 -X POST $u `
+                    $resp = & curl.exe -s -m 20 --connect-timeout 5 --noproxy "*" -X POST $u `
                         -H "X-Service-Id: $ProxySvcId" `
                         -H "Content-Type: application/json" `
                         -H "Accept: application/json" -d '{}' 2>$null

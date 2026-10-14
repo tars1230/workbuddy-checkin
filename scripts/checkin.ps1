@@ -1,5 +1,5 @@
 ﻿# ============================================================
-# WorkBuddy 每日积分签到（Windows PowerShell 版，兼容 PS 5.1）  v1.1.0
+# WorkBuddy 每日积分签到（Windows PowerShell 版，兼容 PS 5.1）  v1.1.1
 #
 # 流程（两条路径，A 优先、B 兜底）：
 #   路径 A（首选，零凭据）：调用桌面端注入的本地服务代理
@@ -130,13 +130,7 @@ function Write-LogHost([string]$msg) {
 $script:__ProxyBasesProbed = $false
 $script:__ProxyBasesCache = @()
 
-# -FastOnly：只回环境变量地址，不做任何端口枚举（毫秒级）
 function Get-ProxyBases {
-    param([switch]$FastOnly)
-    if ($FastOnly) {
-        if ($env:CODEBUDDY_SERVICE_PROXY_URL) { return @($env:CODEBUDDY_SERVICE_PROXY_URL.TrimEnd('/')) }
-        return @()
-    }
     if ($script:__ProxyBasesProbed) { return $script:__ProxyBasesCache }
     $script:__ProxyBasesProbed = $true
     $bases = @()
@@ -165,6 +159,9 @@ function Get-ProxyBases {
 
 # 在一批候选地址上尝试请求；按形态分组（先全部百分号编码形态，再全部 as-is 兼容形态），
 # 避免每个失败地址都白试一次兼容变体。返回首个 code=0 的响应，全失败返回 ""
+# ⚠️ 回环请求必须加 --noproxy '*'：企业环境常设 http_proxy/https_proxy，
+#    不绕过就会把 127.0.0.1 的请求也丢给代理 —— 实测会导致整轮签到 42s 后失败。
+# ⚠️ --connect-timeout 5 兜住「端口静默丢包」的最坏情况。
 function Invoke-ProxyOnBases([string]$Target, $Bases) {
     $enc = $Target -replace '/', '%2F'
     $list = @($Bases)
@@ -174,7 +171,7 @@ function Invoke-ProxyOnBases([string]$Target, $Bases) {
             if ($pass -eq "plain") { $u = "$x/..%2F..%2F$enc" } else { $u = "$x/../../$Target" }
             $resp = ""
             try {
-                $resp = & curl.exe -s -m 20 -X POST $u `
+                $resp = & curl.exe -s -m 20 --connect-timeout 5 --noproxy "*" -X POST $u `
                     -H "X-Service-Id: $ProxySvcId" `
                     -H "Content-Type: application/json" `
                     -H "Accept: application/json" -d '{}' 2>$null
@@ -186,10 +183,14 @@ function Invoke-ProxyOnBases([string]$Target, $Bases) {
 }
 
 # 快慢两轮：先只用环境变量地址（廉价），失败才做端口枚举（昂贵）
+# full 轮排除刚试过的环境变量地址：它已失效（App 重启换了端口），再试只是白付两次请求
 function Invoke-ProxyApi([string]$Target) {
     if ($env:CODEBUDDY_SERVICE_PROXY_URL) {
-        $r = Invoke-ProxyOnBases $Target (Get-ProxyBases -FastOnly)
+        $envBase = $env:CODEBUDDY_SERVICE_PROXY_URL.TrimEnd('/')
+        $r = Invoke-ProxyOnBases $Target @($envBase)
         if ($r) { return $r }
+        $rest = @(Get-ProxyBases | Where-Object { $_ -ne $envBase })
+        return (Invoke-ProxyOnBases $Target $rest)
     }
     return (Invoke-ProxyOnBases $Target (Get-ProxyBases))
 }
@@ -226,6 +227,9 @@ function Invoke-ProxyCheckin {
 }
 
 if (Invoke-ProxyCheckin) { exit 0 }
+# 首选路径失败：下面的提示要据此区分「桌面端没开」和「缺运行时」——
+# 登录态已信封加密，脱机时装 Node/Electron 都救不了，提示错了会让人白折腾。
+$ProxyFailed = $true
 try { if ($__prevConsoleEncoding) { [Console]::OutputEncoding = $__prevConsoleEncoding } } catch {}
 
 # ---------- 1. 读取令牌：Node 优先，Electron 回退 ----------
@@ -253,12 +257,15 @@ if (-not $Token -or $Token.StartsWith("ERR")) {
     }
 }
 
-if (-not $Token) {
-    Write-Log "❌ 未找到 Node 或 Electron 运行时，或运行时未能产出令牌。请安装 Node.js，或设置 WB_CHECKIN_NODE / WB_CHECKIN_ELECTRON。"
-    exit 1
-}
-if ($Token.StartsWith("ERR")) {
-    Write-Log "❌ 获取令牌失败（$Token）。请确认已安装并登录 WorkBuddy 桌面端。"
+if (-not $Token -or $Token.StartsWith("ERR")) {
+    if ($ProxyFailed) {
+        Write-Log "❌ 两条路径都失败了。首选路径（本地服务代理）不可用，最常见的原因是 WorkBuddy 桌面端没在运行 —— 先启动桌面端再重试；当前登录态是 at-rest 信封加密（解封密钥只在 App 进程内存），脱机状态下没有任何离线办法拿到令牌，装 Node.js / Electron 都不解决问题。"
+        if ($Token) { Write-Log "   （回退路径的报错：$Token）" }
+    } elseif (-not $Token) {
+        Write-Log "❌ 未找到 Node 或 Electron 运行时，或运行时未能产出令牌。请安装 Node.js，或设置 WB_CHECKIN_NODE / WB_CHECKIN_ELECTRON。"
+    } else {
+        Write-Log "❌ 获取令牌失败（$Token）。请确认已安装并登录 WorkBuddy 桌面端。"
+    }
     exit 1
 }
 
@@ -272,7 +279,14 @@ try {
         -H "Authorization: Bearer $Token" -d '{}' 2>$null
 } catch { $Status = "" }
 if (-not $Status) { Write-Log "❌ 查询签到状态失败（网络异常）"; exit 1 }
-if ($Status -match "401|unauthorized") { Write-Log "❌ 令牌已过期（401），请打开 WorkBuddy 桌面端刷新登录态后重试"; exit 1 }
+if ($Status -match "401|unauthorized") {
+    if ($ProxyFailed) {
+        Write-Log "❌ 收到 401。首选路径（本地服务代理）没生效，最常见的原因是 WorkBuddy 桌面端没在运行；这里的 401 来自回退路径读到的旧令牌。先启动桌面端再重试即可。"
+    } else {
+        Write-Log "❌ 令牌已过期（401），请打开 WorkBuddy 桌面端刷新登录态后重试"
+    }
+    exit 1
+}
 
 # 注意：today_checked_in 字段在 v5.3.8 实测不可靠（签到成功后仍可能为 false）。
 # 此处仅用于快速短路与 401 探测；真正的幂等兜底在下方 daily-checkin 的 code=10001 处理。

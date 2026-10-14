@@ -1,7 +1,7 @@
 ---
 name: workbuddy-checkin
 description: WorkBuddy 每日积分自动签到。首选走桌面端本地服务代理（零凭据，由 App 自行附加登录态），失败才回退读取本机登录令牌（信封加密 / state.vscdb），调用官方签到 API 完成每日积分领取（100 积分/天，连续第 7 天 1000 积分），并支持配置定时任务。触发词：WorkBuddy 签到、每日积分、check-in、credits。
-version: "1.1.0"
+version: "1.1.1"
 license: MIT
 ---
 
@@ -9,6 +9,32 @@ license: MIT
 
 自动领取 WorkBuddy 每日积分（100 积分/天，连续第 7 天 1000 积分）。
 全流程在本机完成：**首选由桌面端代发请求（零凭据）**，回退时读取本地登录态。无后端服务。
+
+## ⚠️ 前置条件（最重要的一条）
+
+**路径 A 要求 WorkBuddy 桌面端正在运行。** 这不是可选项：
+
+- 桌面端在跑 → 它把 `CODEBUDDY_SERVICE_PROXY_URL` 注入子进程，脚本零凭据完成签到。
+- 桌面端没在跑 → 回退路径 B 只能在**登录态仍是可离线解密的形态**时成功；
+  当前主流登录态是 at-rest 信封加密（解封密钥只在 App 进程内存），此时回退路径
+  拿到的多是 `state.vscdb` 里的**旧令牌**，签到会以 401 告终。
+
+所以：**定时任务必须保证执行时刻桌面端在运行**（见下方「设置定时任务」的两种做法）。
+签到本身不需要窗口在前台，后台运行即可。
+
+## 环境支持矩阵（诚实版）
+
+| 环境 | 路径 A（零凭据） | 路径 B（回退） | 实测状态 |
+|------|------------------|----------------|----------|
+| Windows 10/11 + Git Bash | ✅ | ✅ | **已实测**（含企业代理污染、精简 PATH、失效代理地址） |
+| Windows 10/11 + PowerShell 5.1 | ✅ | ✅ | **已实测**（解析 0 错误、BOM 完整） |
+| macOS（Intel / Apple Silicon） | ⚠️ 未实测 | ⚠️ 未实测 | **未验证**：桌面端是否同样注入 `CODEBUDDY_SERVICE_PROXY_URL` 未知；探测端口依赖 `lsof` 匹配 `WorkBuddy`/`CodeBuddy` 进程名 |
+| Linux | ⚠️ 未实测 | ⚠️ 未实测 | **未验证**：同上；路径 B 的旧库分支还需桌面会话 + keyring |
+| 企业代理环境（设了 `http_proxy`） | ✅ | ⚠️ 取决于代理 | **已实测修复**（回环请求强制 `--noproxy '*'`） |
+| 桌面端未运行 | ❌ | ⚠️ 多数情况下 401 | **已实测**（会打印明确指路，而不是让人去装 Node） |
+
+> 上表里标「未实测」的格子是真实缺口，不要当成可用。macOS / Linux 首次运行请先跑 `bash scripts/setup.sh`
+> 并跑一次 `bash scripts/checkin.sh`，把输出反馈回来。
 
 ## 原理
 
@@ -145,6 +171,15 @@ powershell -ExecutionPolicy Bypass -File scripts\checkin.ps1
 
 电脑非全天开机时，建议配置多个时间点补签（脚本幂等，重复运行无副作用）。推荐 `09:00 / 12:00 / 15:00 / 18:00 / 21:00` 各尝试一次，只要电脑在任一时间点开机就能签上。
 
+> **先确保桌面端会自启**（否则路径 A 用不上，见文首「前置条件」）。三种做法任选：
+> - **Windows**：把 WorkBuddy 加进启动项。安装时通常已自动加好，可用
+>   `reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run"` 确认。
+> - **macOS**：系统设置 → 通用 → 登录项，加入 WorkBuddy；或在下面的 launchd 任务里
+>   先执行 `open -a WorkBuddy` 再跑脚本（中间留 15 秒）。
+> - **通用兜底**：定时脚本里先尝试启动应用，`sleep 15` 后重试一次签到。
+>
+> 若桌面端确实无法常驻，请把定时任务安排在你**通常开机的时段**，并接受「没开机就没签到」。
+
 ### macOS / Linux（crontab）
 ```bash
 crontab -e
@@ -229,6 +264,15 @@ Windows PowerShell 执行策略用 `-ExecutionPolicy Bypass`；需 `curl.exe`（
 - **精简 PATH（cron / 计划任务 / Git Bash）下探测不到端口**：`netstat` 用相对命令名时，
   Git Bash 会把 `PATH` 翻译成 Git 自己的目录（System32 丢失），裸 `netstat` 直接解析不到。
   v1.1.0 已改为绝对路径 `%SystemRoot%\System32\netstat.exe`，该场景实测通过。
+- **企业环境设了 `http_proxy` / `https_proxy`，签到整体失败**（v1.1.0 之前的真实缺陷）：
+  curl 会把发往 `127.0.0.1` 的回环请求也丢给代理，实测整轮 **42s 后 exit 1**。
+  v1.1.1 起所有回环请求强制 `--noproxy '*'`，同一场景 **1.9s 成功**。
+  注意：回退路径发往 `copilot.tencent.com` 的请求**不**绕过代理（企业网络可能正需要它）。
+- **代理地址失效（桌面端重启换了端口）**：v1.1.1 起 fast 轮失败后会做端口枚举，
+  且不会重复试已经失败的地址；同时 `--connect-timeout 5` 兜住端口静默丢包的最坏情况。
+- **收到 401 且脚本提示「首选路径没生效」**：说明桌面端当时没在运行，这个 401 是回退路径
+  读到的 `state.vscdb` 旧令牌造成的。启动桌面端再跑即可，**不需要**去刷登录态或装任何运行时。
+- **签到必须桌面端在运行**：这是设计使然（信封密钥只在 App 进程内存）。见文首「前置条件」。
 - **PowerShell 版报「传入的对象无效，应为…」**：PS 5.1 用 OEM 代码页解码 `curl.exe` 的 UTF-8 输出，
   中文乱码会破坏 JSON。v1.1.0 已在脚本内临时切 `[Console]::OutputEncoding` 为 UTF-8 修复。
 - **「获取令牌失败（未知原因）」/ 未找到本地登录态**：先确认 WorkBuddy 桌面端已登录并打开过至少一次。检查 Node.js 是否安装（`node -v`），或用 `WB_CHECKIN_NODE` 指定。

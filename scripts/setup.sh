@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# WorkBuddy 每日签到 - 环境安装脚本（通用版）  v1.1.0
+# WorkBuddy 每日签到 - 环境安装脚本（通用版）  v1.1.1
 #
 # 检查顺序（与 checkin.sh 一致）：
 #   路径 A（首选）：本地服务代理可用？→ 零凭据，无需 Node / Electron，直接完成
@@ -118,12 +118,13 @@ http://127.0.0.1:$p/internal/hooks/services/invoke"
 }
 
 # ---------- 路径 A 探测：本地服务代理是否可用（零凭据，不接触任何令牌）----------
+# 回环请求加 --noproxy '*'：企业环境设了 http_proxy/https_proxy 时会误把 127.0.0.1 的请求丢给代理
 probe_proxy() {
   local curl_bin base resp
   curl_bin="$(find_curl)" || return 1
   while IFS= read -r base; do
     [ -z "$base" ] && continue
-    resp=$("$curl_bin" -s -m 20 -X POST \
+    resp=$("$curl_bin" -s -m 20 --connect-timeout 5 --noproxy '*' -X POST \
       "${base}/..%2F..%2Fbilling%2Fmeter%2Fcheckin-activity-status" \
       -H "X-Service-Id: ${WB_CHECKIN_SERVICE_ID:-auth}" \
       -H 'Content-Type: application/json' \
