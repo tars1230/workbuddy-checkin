@@ -1,0 +1,16 @@
+# 运行产物（含账号相关结果，切勿提交）
+logs/
+.runtime/
+
+# 依赖与缓存
+node_modules/
+package-lock.json
+package.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~

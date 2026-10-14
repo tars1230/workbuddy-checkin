@@ -1,0 +1,11 @@
+# 行尾统一：仓库内一律存 LF，检出时按类型还原。
+# 少了这个文件，Windows（core.autocrlf=true）提交的 .sh 会在别的机器上变成 CRLF，
+# 导致 `#!/bin/bash\r` → bad interpreter。
+* text=auto eol=lf
+
+# Windows 脚本检出为 CRLF（PS 5.1 友好），仓库内仍存 LF
+*.ps1 text eol=crlf
+
+# Unix 脚本与 JS 一律 LF
+*.sh  text eol=lf
+*.js  text eol=lf
