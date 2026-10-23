@@ -28,7 +28,7 @@ license: MIT
 |------|------------------|----------------|----------|
 | Windows 10/11 + Git Bash | ✅ | ✅ | **已实测**（含企业代理污染、精简 PATH、失效代理地址） |
 | Windows 10/11 + PowerShell 5.1 | ✅ | ✅ | **已实测**（解析 0 错误、BOM 完整） |
-| macOS（Intel / Apple Silicon） | ⚠️ 未实测 | ⚠️ 未实测 | **未验证**：桌面端是否同样注入 `CODEBUDDY_SERVICE_PROXY_URL` 未知；探测端口依赖 `lsof` 匹配 `WorkBuddy`/`CodeBuddy` 进程名 |
+| macOS（Apple Silicon / Intel） | ✅ | ⚠️ 依赖钥匙串 | **已实测支持**（macOS 原生 netstat + pgrep 毫秒级自探测，免疫 lsof 内核挂起） |
 | Linux | ⚠️ 未实测 | ⚠️ 未实测 | **未验证**：同上；路径 B 的旧库分支还需桌面会话 + keyring |
 | 企业代理环境（设了 `http_proxy`） | ✅ | ⚠️ 取决于代理 | **已实测修复**（回环请求强制 `--noproxy '*'`） |
 | 桌面端未运行 | ❌ | ⚠️ 多数情况下 401 | **已实测**（会打印明确指路，而不是让人去装 Node） |

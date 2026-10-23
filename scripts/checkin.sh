@@ -224,6 +224,29 @@ discover_proxy_bases_raw() {
     ports=$("$ps_bin" -NoProfile -NonInteractive -Command "$ps_cmd" \
       2>/dev/null | tr -d '\r' | tr -d ' ')
   fi
+  if [ -z "$ports" ] && [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    # macOS: 进程名通常为 Electron，且全局 lsof 在部分系统因内核 Mach 端口锁会严重卡死。
+    # 用 macOS 原生 netstat -anv -p tcp 搭配 pgrep 毫秒级提取 WorkBuddy 监听端口
+    local wb_pids
+    wb_pids=$(pgrep -f -i 'workbuddy|codebuddy' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+    if [ -n "$wb_pids" ]; then
+      ports=$(netstat -anv -p tcp 2>/dev/null \
+        | awk -v pids="^($wb_pids)$" '/LISTEN/ {
+            for (i=1; i<=NF; i++) {
+              if ($i ~ /:[0-9]+$/) {
+                split($i, a, ":")
+                if (a[2] ~ pids) {
+                  split($4, b, ".")
+                  print b[length(b)]
+                }
+              }
+            }
+          }' | sort -u)
+    fi
+  fi
+  if [ -z "$ports" ] && command -v ss >/dev/null 2>&1; then
+    ports=$(ss -tulpn 2>/dev/null | grep -iE 'workbuddy|codebuddy' | awk '{print $5}' | sed 's/.*://' | tr -d ' ')
+  fi
   if [ -z "$ports" ] && command -v lsof >/dev/null 2>&1; then
     # macOS / Linux 回退。进程名按大小写不敏感匹配 WorkBuddy / CodeBuddy
     # （应用曾用名 CodeBuddy；Electron 的渲染/工具进程名会带 " Helper" 后缀，同样命中）
@@ -284,12 +307,12 @@ proxy_try_bases() {
     mode="${line%%|*}"
     u="${line#*|}"
     if [ "$mode" = "as-is" ]; then
-      resp=$("$CURL_BIN" -s -m 20 --connect-timeout 5 --noproxy '*' --path-as-is -X POST "$u" \
+      resp=$("$CURL_BIN" -s -m 10 --connect-timeout 2 --noproxy '*' --path-as-is -X POST "$u" \
         -H "X-Service-Id: $PROXY_SVC_ID" \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json' -d '{}' 2>/dev/null)
     else
-      resp=$("$CURL_BIN" -s -m 20 --connect-timeout 5 --noproxy '*' -X POST "$u" \
+      resp=$("$CURL_BIN" -s -m 10 --connect-timeout 2 --noproxy '*' -X POST "$u" \
         -H "X-Service-Id: $PROXY_SVC_ID" \
         -H 'Content-Type: application/json' \
         -H 'Accept: application/json' -d '{}' 2>/dev/null)

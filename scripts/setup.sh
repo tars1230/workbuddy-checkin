@@ -101,9 +101,32 @@ discover_proxy_bases() {
     ports=$("$ps_bin" -NoProfile -NonInteractive -Command "$ps_cmd" \
       2>/dev/null | tr -d '\r' | tr -d ' ')
   fi
+  if [ -z "$ports" ] && [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    # macOS: 进程名通常为 Electron，且全局 lsof 在部分系统因内核 Mach 端口锁会严重卡死。
+    # 用 macOS 原生 netstat -anv -p tcp 搭配 pgrep 毫秒级提取 WorkBuddy 监听端口
+    local wb_pids
+    wb_pids=$(pgrep -f -i 'workbuddy|codebuddy' 2>/dev/null | tr '\n' '|' | sed 's/|$//')
+    if [ -n "$wb_pids" ]; then
+      ports=$(netstat -anv -p tcp 2>/dev/null \
+        | awk -v pids="^($wb_pids)$" '/LISTEN/ {
+            for (i=1; i<=NF; i++) {
+              if ($i ~ /:[0-9]+$/) {
+                split($i, a, ":")
+                if (a[2] ~ pids) {
+                  split($4, b, ".")
+                  print b[length(b)]
+                }
+              }
+            }
+          }' | sort -u)
+    fi
+  fi
+  if [ -z "$ports" ] && command -v ss >/dev/null 2>&1; then
+    ports=$(ss -tulpn 2>/dev/null | grep -iE 'workbuddy|codebuddy' | awk '{print $5}' | sed 's/.*://' | tr -d ' ')
+  fi
   if [ -z "$ports" ] && command -v lsof >/dev/null 2>&1; then
     ports=$(lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null \
-      | awk '/WorkBuddy|workbuddy/ {print $9}' | sed 's/.*://' | tr -d ' ')
+      | grep -iE 'workbuddy|codebuddy' | awk '{print $9}' | sed 's/.*://' | tr -d ' ')
   fi
 
   local p
@@ -124,7 +147,7 @@ probe_proxy() {
   curl_bin="$(find_curl)" || return 1
   while IFS= read -r base; do
     [ -z "$base" ] && continue
-    resp=$("$curl_bin" -s -m 20 --connect-timeout 5 --noproxy '*' -X POST \
+    resp=$("$curl_bin" -s -m 10 --connect-timeout 2 --noproxy '*' -X POST \
       "${base}/..%2F..%2Fbilling%2Fmeter%2Fcheckin-activity-status" \
       -H "X-Service-Id: ${WB_CHECKIN_SERVICE_ID:-auth}" \
       -H 'Content-Type: application/json' \

@@ -1,5 +1,15 @@
 # 变更日志
 
+## [1.1.2] - 2026-10-23
+
+### 修复与优化
+
+- **macOS 实测支持与原生 netstat 毫秒级端口自探测（修复真实隐蔽卡死）**：
+  - 在 macOS 上，全局执行 `lsof -nP -iTCP -sTCP:LISTEN` 会由于系统 Mach 端口锁或网络虚拟接口导致进程无期限陷入内核态挂起（`U` 状态）。
+  - macOS 下 WorkBuddy 进程的主二进制在系统进程表中为 `Electron`，原本按命令行单纯正则匹配 `WorkBuddy|codebuddy` 无法正确命中监听端。
+  - 新增 macOS 专用探测逻辑：使用原生 `/usr/sbin/netstat -anv -p tcp` 配合 `pgrep -f -i 'workbuddy|codebuddy'` 毫秒级提取所有属于 WorkBuddy 的本地端口，耗时从不可控挂起缩短至 0.05 秒。
+  - 本地回环连接探测试探超时由 5 秒调优至 2 秒，加快无效候选端口的轮询流转。
+
 ## [1.1.1] - 2026-10-14
 
 ### 修复
