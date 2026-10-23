@@ -298,8 +298,8 @@ proxy_candidates() {
 # 在给定的一批候选地址上尝试请求；返回首个 code=0 的响应
 # ⚠️ 回环请求必须加 --noproxy '*'：企业环境常设 http_proxy/https_proxy 环境变量，
 #    不绕过就会把 127.0.0.1 的请求也丢给代理 —— 实测会导致整轮签到 42s 后直接失败。
-# ⚠️ --connect-timeout 5 兜住「端口静默丢包」的最坏情况（Windows 上连一个关闭的端口
-#    本就要约 2.2s；若被防火墙静默丢弃，没有这个上限会一路耗到 -m 20）。
+# ⚠️ --connect-timeout 2 兜住「端口静默丢包」的最坏情况（Windows 上连一个关闭的端口
+#    本就要约 2.2s；若被防火墙静默丢弃，没有这个上限会一路耗到 -m 10）。
 proxy_try_bases() {
   local tgt="$1" dmode="$2" skip_env="${3:-0}" line mode u resp
   while IFS= read -r line; do
